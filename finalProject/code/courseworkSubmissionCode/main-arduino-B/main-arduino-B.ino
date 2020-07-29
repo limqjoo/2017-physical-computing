@@ -1,0 +1,391 @@
+/*
+    Vibrating Diamonds
+  Main program for Arduino UNO
+  Created by Qian Joo, Lim
+  7 DEC 2016
+*/
+
+#include "Manchester.h"
+#include <LiquidCrystal.h>
+
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+#define RX_PIN 9 //receiver module
+#define TX_PIN 8 //transmitter module
+#define POT_PIN A0 //potentiometer
+#define A_PIN A1 //ENTER button
+#define B_PIN 10 //BACK button
+#define COPPER_PIN A2 //copper strip
+#define LED_PIN 1
+#define LED_PIN2 13
+
+#define BUFFER_SIZE 4
+byte buffer[BUFFER_SIZE];
+
+const byte ok = 90;
+
+byte array_to_transmit[4] = {
+  4, 65, 81, 0
+};
+const byte arraySize = 4;
+byte received_array[4];
+int currentF = 0;
+
+const int threshold = 450; //input from attiny copper tape
+int newF = 0;
+
+const int frequencies[10] = {
+  25, 30, 35, 40, 50, 60, 75, 85, 105, 125
+}; //mapped to values for output to vibration motor: 71 - 80
+
+/*
+  modes:
+  0 - no diamond docked
+  1 - diamond docked, establishing 'connection' to diamond
+  2 - menu (switch on/off or change frequency)
+  3 - switch on/off
+  4 - change frequency
+  5 - exit to mode 2
+*/
+int mode = 3;
+int prevStatus = 0;
+int prevMode = -1;
+
+
+/*
+  function: Sends tag 'to' number of times
+*/
+void send_array(int to) {
+  //digitalWrite(LED_PIN2, HIGH);
+  Serial.println("sending...");
+  int moo = 0;
+  array_to_transmit[3] = checksum();
+  while (moo < to) {
+    man.transmitArray(arraySize, array_to_transmit);
+    //    Serial.print("array sent: ");
+    //    Serial.print(array_to_transmit[1]);
+    //    Serial.print(array_to_transmit[2]);
+    //    Serial.println(array_to_transmit[3]);
+    delay(50); //space out the signals for less noise, and to make sure it doesn't pick up it's own signal at the end
+    moo++;
+  }
+  delay(100);
+}
+
+/*
+  function: Receives tag within specified time
+*/
+boolean receiving_array(int to) {
+  Serial.println("receiving...");
+  unsigned long timeout = millis() + to; //specifies how long to listen for array
+  while (millis() < timeout) {
+    if (man.receiveComplete())
+    {
+      if (buffer[0] == arraySize) { //if received array size matches
+        Serial.print(checksum(buffer[1], buffer[2]));
+        if (checksum(buffer[1], buffer[2]) == buffer[3]) { //if checksum matches
+          Serial.println(" checksum ok");
+          for (byte i = 0; i < arraySize; i++) {
+            received_array[i] = buffer[i]; //save received array to local memory
+            Serial.println(received_array[i]);
+          }
+          man.beginReceiveArray(BUFFER_SIZE, buffer);
+
+          return true; //exit function with saved received array
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/*
+   function: Receivies an expected specific tag (only middle two elements) within specified time
+*/
+boolean receiving_array(int to, byte* expected_array) {
+  Serial.println("receiving...");
+  unsigned long timeout = millis() + to; //specifies how long to listen for array
+  while (millis() < timeout) {
+    if (man.receiveComplete())
+    {
+      if (buffer[0] == arraySize) { //if received array size matches
+        //Serial.print(buffer[1]);
+        //Serial.println(buffer[2]);
+        if (expected_array[0] == buffer[1] && expected_array[1] == buffer[2]) { //if tags match
+          //Serial.print(checksum(buffer[1], buffer[2]));
+          if (checksum(buffer[1], buffer[2]) == buffer[3]) { //if checksum matches
+            //Serial.println(" checksum ok");
+            for (byte i = 0; i < arraySize; i++) {
+              received_array[i] = buffer[i]; //save received array to local memory
+              //Serial.println(received_array[i]);
+            }
+            man.beginReceiveArray(BUFFER_SIZE, buffer);
+
+            return true; //exit function with saved received array
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/*
+  function: Calculates checksum
+*/
+int checksum(int a, int b) {
+  int cs = (a * b * 13) % 8 + 82;
+  return cs;
+}
+
+/*
+  function: Checksum generator for sending arrays
+*/
+int checksum() {
+  return checksum(array_to_transmit[1], array_to_transmit[2]);
+}
+
+//-------------------------------------------------------------------
+void setup()
+{
+  pinMode(POT_PIN, INPUT);
+  pinMode(COPPER_PIN, INPUT);
+  pinMode(A_PIN, INPUT);
+  pinMode(B_PIN, INPUT);
+  Serial.begin(9600);
+  man.setupReceive(RX_PIN, MAN_300);
+  man.setupTransmit(TX_PIN, MAN_300);
+  man.beginReceiveArray(BUFFER_SIZE, buffer);
+  //Serial.println("going to mode 0");
+  lcd.begin(16, 2);
+  lcd.print("Initialised.");
+}
+
+void loop()
+{
+  //Serial.println(analogRead(POT_PIN));
+  /*delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+  if (A == HIGH && B == LOW) { //ENTER button pressed
+      send_array(100);
+      Serial.println("ON/OFF");
+    }*/
+
+  if (mode != 0 && analogRead(COPPER_PIN) < threshold) { //if nothing is on dock, input from copper tape is LOW
+    //clear variables & go to mode 0
+    array_to_transmit[1] = 0;
+    currentF = 0;
+    prevMode = mode;
+    mode = 0;
+  }
+  
+  //  MODE 0 - No diamond docked
+  if (mode == 0) {
+    //display
+    if (prevMode != 0) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Nothing docked.");
+      lcd.setCursor(0, 1);
+      lcd.print("Ready.");
+      prevMode = 0;
+    }
+    if (analogRead(COPPER_PIN) > threshold) { //if diamond is docked, input from copper tape is HIGH
+      mode = 1;
+    }
+  }
+  
+  //  MODE 1 - Diamond detected in dock, choose which diamond is in dock.
+  else if (mode == 1) {
+    //display
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("The");
+    lcd.setCursor(0, 1);
+    lcd.print("diamond docked.");
+    lcd.setCursor(6, 0);
+
+    int pot = analogRead(POT_PIN);
+    if (pot >= 920) {
+      lcd.print("WOOD");
+      array_to_transmit[1] = 65;
+    } else if (pot < 920 && pot >= 550) {
+      lcd.print("PLASTIC");
+      array_to_transmit[1] = 66;
+    } else if (pot < 550 && pot >= 165) {
+      lcd.print("THING1");
+      array_to_transmit[1] = 67;
+    } else if (pot < 165) {
+      lcd.print("THING2");
+      array_to_transmit[1] = 68;
+    }
+
+    delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+    if (A == HIGH && B == LOW) { //ENTER button pressed
+      mode = 2;
+    }
+  }
+  
+   //  MODE 2 -Diamond in dock (choose action)
+  else if (mode == 2) {
+    int pot = analogRead(POT_PIN);
+    int  v;
+    if (pot > 550) {
+      v = 0;
+    } else {
+      v = 1;
+    }
+    //display
+    lcd.clear();
+    if (v == 0) { // first option selected
+      lcd.setCursor(0, 0);
+      lcd.print(">    ON/OFF    <");
+      lcd.setCursor(0, 1);
+      lcd.print("  CHANGE FREQ.  ");
+    } else if (v == 1) { //second option selected
+      lcd.setCursor(0, 0);
+      lcd.print("     ON/OFF     ");
+      lcd.setCursor(0, 1);
+      lcd.print("> CHANGE FREQ. <");
+    }
+
+    delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+    if (A == HIGH && B == LOW) { //ENTER button pressed
+      prevStatus = 0;
+      mode = 3 + v;
+    } else if (A == LOW && B == HIGH) { // BACK button pressed
+      mode = 1;
+    }
+  }
+  
+  //  MODE 3 - Diamond in dock - turn diamond on/off
+  
+  else if (mode == 3) {
+    //display
+    //if (prevStatus == 0) { //prev display not the same)
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Press ENTER to");
+    lcd.setCursor(0, 1);
+    lcd.print("switch on/off.");
+    prevStatus = 1;
+    //}
+
+    delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+    if (A == HIGH && B == LOW) { //ENTER button pressed
+      array_to_transmit[2] = 81;
+      array_to_transmit[3] = checksum();
+      send_array(2);
+      Serial.println("ON/OFF");
+    } else if (A == LOW && B == HIGH) { // BACK button pressed
+      prevStatus = 0;
+      prevMode = 3;
+      mode = 5;
+    }
+  }
+
+  
+  //   MODE 4 - Diamond in dock - change frequency of diamond
+  
+  else if (mode == 4) {
+    //read value from potentiometer
+    int newF = map(analogRead(POT_PIN), 0, 1023, 0, 9);
+
+    //display
+    //if (prevStatus == 0) { //prev display not the same)
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Current:  New:");
+    lcd.setCursor(0, 1);
+    lcd.print(frequencies[9 - currentF]);
+    lcd.setCursor(10, 1);
+    lcd.print(frequencies[9 - newF]);
+    prevStatus = 1;
+    //}
+
+    delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+    if (A == HIGH && B == LOW) { //if user presses ENTER button
+      Serial.println("A");
+      prevStatus = 0;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Sending new fq...");
+      lcd.setCursor(0, 1);
+      lcd.print("Please wait...");
+
+      //send new frequency to diamond
+      array_to_transmit[2] = (9 - newF) + 71;
+      array_to_transmit[3] = checksum();
+      send_array(2);
+
+      byte expected_tag[2] = {array_to_transmit[1], ok};
+      if (receiving_array(1000, expected_tag)) { //if received affirmative (that diamond received new frequency)
+        currentF = newF;
+        //display
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Current fq: ");
+        lcd.setCursor(12, 0);
+        lcd.print(frequencies[9 - currentF]);
+        lcd.setCursor(0, 1);
+        lcd.print("New fq set!");
+        delay(1000);
+      }
+      else {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Sending new fq...");
+        lcd.setCursor(0, 1);
+        lcd.print("Failed to send.");
+        delay(1000);
+      }
+    }
+    else if (A == LOW && B == HIGH) { //if user presses back button
+      Serial.println("B");
+      prevMode = 4;
+      prevStatus = 0;
+      mode = 5;
+    }
+  }
+  
+  //   MODE 5 - Diamond in dock - exit screen to mode 3
+  
+  else if (mode == 5) {
+    //display
+    if (prevStatus == 0) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Go back to");
+      lcd.setCursor(0, 1);
+      lcd.print("previous menu?");
+      prevStatus = 1;
+    }
+
+    delay(250); //prevent 'double-pressing' of button
+    int A = digitalRead(A_PIN);
+    int B = digitalRead(B_PIN);
+    if (A == HIGH && B == LOW) { //pressed enter button - exit
+      //exit to mode 2
+      Serial.println("A");
+      Serial.println("going to mode 2");
+      prevStatus = 0;
+      A = LOW;
+      mode = 2;
+    }
+    else if (A == LOW && B == HIGH) { //pressed back button - continue in previousMode
+      Serial.println("B");
+      prevStatus = 0;
+      B = LOW;
+      mode = prevMode;
+    }
+  }
+}
+
